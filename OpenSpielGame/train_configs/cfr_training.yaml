@@ -1,0 +1,219 @@
+## 基于 AffectGame.yaml 格式，增加 CFR 训练相关配置
+
+model:
+  arch: affectgpt
+  model_type: pretrain_vicuna
+
+  # Audio Q-Former and Video Q-Former
+  frozen_video_proj: False
+  frozen_video_Qformer: False
+  frozen_audio_Qformer: False
+  frozen_audio_proj: False
+  frozen_multi_Qformer: False
+  frozen_multi_llama_proj: False
+  frozen_llm: False
+
+  multi_fusion_type: attention # attention/qformer
+  video_fusion_type: attention # qformer(default)/mean/attention
+  audio_fusion_type: attention # qformer(default)/mean/attention
+  image_fusion_type: mean       # token(default)/mean
+
+  # AffectGPT 检查点（CFR训练时可不填，由命令行指定）
+  ckpt:   ""
+  ckpt_2: ""
+
+  # 预训练模型配置
+  llama_model: "Qwen25"            # Qwen25 / Llama31 / Gemma3
+  acoustic_encoder: "HUBERT_LARGE" # IMAGEBIND
+  visual_encoder: "CLIP_VIT_LARGE" # EVA_CLIP_G
+
+  num_audio_query_token: 1
+  num_video_query_token: 1
+  num_multi_query_token: 1
+  num_image_query_token: 1
+
+  max_length: 1024
+
+  vis_processor:
+    train:
+      name: "alpro_video_train"
+      n_frms: 8
+      image_size: 224
+  text_processor:
+    train:
+      name: "blip_caption"
+  img_processor:
+    train:
+      name: "blip2_image_train"
+      image_size: 224
+
+#mer2025ov
+#mercaptionplus
+datasets:
+  mer2025ov:
+    data_type: video
+    face_or_frame: 'multiface_audio_face_text'
+    label_type: 'hybird'
+
+
+# CFR 训练运行配置
+run:
+  task: video_text_pretrain  # 复用 AffectGPT 的任务类型以加载数据集
+  max_epoch: 3              # CFR 训练轮数
+  seed: 42                   # 随机种子
+  train_splits: ["train"]    # 数据集划分
+
+
+# 推理配置
+inference:
+  task: video_text_pretrain
+
+  vis_processor:
+    train:
+      name: "alpro_video_eval"
+      n_frms: 8
+      image_size: 224
+  text_processor:
+    train:
+      name: "blip_caption"
+  img_processor:
+    train:
+      name: "blip2_image_eval"
+      image_size: 224
+
+  face_or_frame: 'multiface_audio_face_text'
+
+  base_root: 'output/cfr_results_debate1'
+  
+  ckpt_root: output/cfr_training/checkpoints
+  ckpt_name: cfr_final
+  gpu: 0
+
+
+# CFR 求解器专属配置
+cfr:
+  # 信息集模式（核心配置 - 控制状态空间大小）:
+  #   - "simple":   P{id}_C{conf}_R{round}
+  #                 约 120 种状态，极速收敛，适合调试
+  #   - "compact":  P{id}_C{conf}_R{round}_Thr{}_Δ{}
+  #                 约 1,080 种状态，抽象趋势（δ<1/=0/>1）
+  #   - "sequence": P{id}_C{conf}_R{round}_Thr{}_Seq{}
+  #                 约 9,720 种状态，变化序列编码（↓/→/↑ 每轮）
+  #   - "medium":   P{id}_H[c0,c1,...]_R{round}
+  #                 约 30,000 种状态，完整置信度历史
+  #   - "full":     P{id}_H[...]_R{round}_Act:...
+  #                 万亿级状态，完整历史+动作，理论最优但难收敛
+  infoset_mode: "simple"
+
+  blind_mode: True
+  # 热身迭代次数（在真实训练前的模拟迭代）
+  warmup_iterations: 1
+  
+  # epsilon-greedy 探索率
+  epsilon: 0.01
+  
+  # 最大权重裁剪（防止 OS-MCCFR 方差爆炸）
+  max_weight: 10000000
+  
+  # 开根号前的原始权重上限（权重压缩公式: W = sqrt(min(W_raw, sqrt_max_raw))）
+  sqrt_max_raw: 100000
+  
+  # 感知模式
+  perception_mode: "deterministic"  # deterministic / entropy_based
+  
+  # 检查点保存间隔（每处理多少样本保存一次）
+  save_every: 100
+  
+  # 输出目录
+  output_dir: "output/cfr_training"
+
+  # 每个 epoch 最多使用的样本数（null 表示使用全部，用于快速验证）
+  max_samples: 10000  # 例如设为 2000 只使用前 2000 个样本
+  
+  # 筹码与下注配置
+  betting_amounts:
+    initial_chips: 100000000  # 每位玩家初始筹码
+    ante: 10              # 强制底注（所有玩家平等投入，保证CFR对称性）
+    raise_amount: 40      # 加注金额
+  
+  # 玩家配置（训练和推理共用）
+  players:
+    - name: "AffectGPT-Qwen"
+      ckpt_path: "output/config_qwen3-4b-it/config_qwen3-4b-it_20260111213/checkpoint_000019_loss_0.932.pth"
+      llm_type: "Qwen3-4b-it"
+      device_id: 0
+    - name: "AffectGPT-Llama"
+      ckpt_path: "output/config_llama/config_llama_20251222214/checkpoint_000018_loss_0.872.pth"
+      llm_type: "Llama31"
+      device_id: 1
+    - name: "AffectGPT-Gemma"
+      ckpt_path: "output/config_gemma/config_gemma_20260101191/checkpoint_000010_loss_0.970.pth"
+      llm_type: "Gemma3"
+      device_id: 0
+
+
+# CFR 推理配置
+cfr_inference:
+  # 策略文件路径（训练产生的 JSON 文件）
+  # 训练完成后，修改为实际的策略文件路径
+  strategy_path: "output/cfr_training/cfr_20260113_004313/checkpoints/cfr_final.json"
+
+  # 是否跳过评分计算（用于处理 MELD 等整数标签数据集）
+  # true: 推理态不计算 GT 得分，仅根据存活状态和筹码判定胜者
+  # false: 正常计算 GT 得分（需确保 GT 格式兼容）
+  # 注意：无论此选项如何设置，赢家的预测文本都会被完整保存
+  skip_score_calculation: true
+  
+  # 输出目录（留空则根据数据集自动生成：output/results-{dataset}/cfr_inference）
+  output_dir: null
+  
+  # 测试数据集名称（可与训练集不同）
+  # 常用选项: MERCaptionPlus, MER2025OV, OVMERDPlus 等
+  # 输出目录会自动根据数据集名称生成，如：
+  #   - OVMERDPlus → output/results-ovmerdplus/cfr_inference
+  #   - MER2025OV → output/results-mer2025ov/cfr_inference
+  dataset: "SIMSv2"
+  
+  # 数据集划分
+  split: "test"
+  
+  # 最大样本数（null 表示全部，设为小数字可快速测试）
+  max_samples: null
+  
+  # 随机种子
+  seed: 42
+
+  #skip_discussion_round: false
+
+  #ablation_mode: "normal"
+
+  # 是否跳过 Qwen2.5 vLLM 打分模型加载
+  # false（默认）: 按 label_extractor 节配置加载 LLM 打分模型（占显存）
+  # true: 不加载任何 LLM 打分模型，直接使用规则提取器（零显存占用）
+  #       适用于：GPU 显存紧张、仅需预测结果而不需打分、推理速度优先等场景
+  skip_scoring_model: true
+  # 日志级别
+  log_level: "INFO"
+
+
+# 标签提取器配置（用于从 LLM 输出中提取情感标签）
+label_extractor:
+  # 是否使用 LLM 提取器（false 则使用规则匹配，无需额外 GPU）
+  use_llm: false
+  
+  # LLM 模型名称（对应 config.py 中的 PATH_TO_LLM）
+  model_name: "Qwen25"
+  
+  # GPU 设备（建议使用空闲的 GPU，如 cuda:3）
+  # 注意：需要确保该 GPU 没有被 AffectGPT 占用
+  device: "cuda:0"
+  
+  # 生成温度（低温度更确定性）
+  temperature: 0.0
+  
+  # 最大生成 token 数
+  max_tokens: 128
+  
+  # 是否使用 vLLM（设为 false 使用 transformers，可正确指定 GPU）
+  # vLLM 在同一进程中无法正确指定 GPU，建议设为 false
+  use_vllm: false
